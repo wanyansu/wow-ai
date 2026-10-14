@@ -61,6 +61,16 @@
       "permissionMode": "acceptEdits",
       "extraArgs": []
     },
+    "pi": {
+      "path": "",
+      "provider": "",
+      "model": "",
+      "thinking": "",
+      "permissionMode": "acceptEdits",
+      "allowedTools": [],
+      "deniedTools": [],
+      "extraArgs": []
+    },
     "grok": {
       "path": "",
       "model": "",

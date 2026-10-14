@@ -16,6 +16,7 @@ A start-to-finish walkthrough for a fresh Windows machine, ending with the `wow-
 | · Grok Build | `grok --version` prints a version | `irm https://x.ai/cli/install.ps1 \| iex` in PowerShell (or `npm install -g @xai-official/grok`), then `grok login`; needs a SuperGrok or X Premium+ subscription |
 | · Antigravity | `agy --version` prints a version | Google's Antigravity CLI installer (the bridge also looks in `%LocalAppData%\agy\bin`), then run `agy` once and log in |
 | · Hermes Agent | `hermes --version` prints a version | Hermes Agent installer, then `hermes setup` once |
+| · pi | `pi --version` prints a version | `npm install -g @earendil-works/pi-coding-agent`, then run `pi` once and `/login`, or set your provider's API key (for example `ANTHROPIC_API_KEY`) |
 
 Open a new terminal after installing Node or Git so the `PATH` change is picked up. Any terminal works: Windows Terminal, PowerShell, cmd, or Git Bash.
 
@@ -41,7 +42,7 @@ This:
 - finds the WoW: Forever client (it looks under `Program Files (x86)\World of Warcraft\_classic_beta_` and a few other common places; pass `--wow "D:\Games\World of Warcraft\_classic_beta_"` if it can't find yours),
 - copies the addon into `Interface\AddOns\WoWAI`,
 - writes `bridge\config.json` with your paths and the project folder,
-- reports which agent CLIs it found (Claude Code, Codex, Grok Build, Antigravity, Hermes); one is enough, and you can add another later,
+- reports which agent CLIs it found (Claude Code, Codex, Grok Build, Antigravity, Hermes, pi); one is enough, and you can add another later,
 - creates the 200 reply-slot addons and about 15,000 tiny signal files next to it. That count is normal: the client only discovers addon files when it launches, so everything the bridge might ever touch has to exist up front.
 
 `--project` is the fallback folder for chats. Once the `wow-ai` command is installed (step 5) you'll usually pick the folder by where you start the bridge instead.

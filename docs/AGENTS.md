@@ -1,6 +1,6 @@
 # Agents
 
-The bridge can drive three coding agents: Claude Code, OpenAI Codex and xAI's Grok Build. This page is the reference for each: what to install, how the bridge starts it, what its permission settings mean, and what it cannot do. The code is `bridge/agents.js`, one entry per agent; `bridge.js` only knows the interface (build the arguments, hand over the prompt, read the stream).
+The bridge can drive these coding agents: Claude Code, OpenAI Codex, xAI's Grok Build, Google's Antigravity CLI, Hermes Agent and pi. This page is the reference for each: what to install, how the bridge starts it, what its permission settings mean, and what it cannot do. The code is `bridge/agents.js`, one entry per agent; `bridge.js` only knows the interface (build the arguments, hand over the prompt, read the stream).
 
 ## Choosing one
 
@@ -10,7 +10,7 @@ The bridge can drive three coding agents: Claude Code, OpenAI Codex and xAI's Gr
 - A session belongs to the agent (and the folder) that made it. A chat that changes agent starts a fresh session with the new one; the transcript in the window stays.
 - The bridge's banner lists every agent with the executable it found, or what to install. A chat whose agent is missing gets a reply saying so instead of a hang.
 
-All of them run headless on the bridge PC, so log in once by hand in a terminal there (`claude`, `codex`, `grok login`, `agy`, `hermes setup`); the bridge reuses the cached login.
+All of them run headless on the bridge PC, so log in once by hand in a terminal there (`claude`, `codex`, `grok login`, `agy`, `hermes setup`, `pi` then `/login`); the bridge reuses the cached login.
 
 ## The shared vocabulary
 
@@ -70,12 +70,24 @@ Codex also checks `CODEX_BIN` before searching `PATH`, so a newer launcher can o
 - **Permissions:** `acceptEdits` is the default. `bypassPermissions` falls back to default; the bridge never passes `--yolo` and appends a note to the reply.
 - **Images and context:** the first image is passed with `--image`; additional paths are included in the prompt. The context block goes at the top of the prompt.
 
+## pi
+
+- **Install:** `npm install -g @earendil-works/pi-coding-agent` (or the installer at [pi.dev](https://pi.dev)), then run `pi` once and `/login` to a subscription, or set your provider's API key in the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …). `pi --version` must work in a terminal. On Windows npm installs a `pi.cmd` launcher; the bridge unwraps it and runs pi's `cli.js` with its own Node.
+- **Command line:** `pi -p --mode json [--tools <list>] [--exclude-tools <list>] [--provider <p>] [--model <m>] [--thinking <level>] [--session <id>] [--append-system-prompt <context>]`, prompt on stdin, started in the chat's folder (pi has no folder flag; it works where it is started).
+- **Permissions:** pi has no approval prompts at all: whatever tools it has, it uses. So `permissionMode` picks the tools: `default` → `read,grep,find,ls`; `acceptEdits` → those plus `edit,write`; `bypassPermissions` → pi's own default set, `bash` included, with no `--tools` flag. A whole tool named in `allowedTools` joins the list (`Bash` gives pi its shell while edits stay the only other write path), and one in `deniedTools` goes to `--exclude-tools` in every mode. Command rules such as `Bash(git:*)` can't be expressed and are skipped, and there is no **Allow** button because pi never reports a refusal: a tool it wasn't given simply isn't offered to the model. An `acceptEdits` pi can't run tests or builds; add `Bash` to `allowedTools`, or use `bypassPermissions`, when it should. Extensions and MCP servers you configured for pi still load; `--no-extensions` / `--no-mcp` in `extraArgs` turns them off.
+- **Session:** the `id` of the `session` event that opens the stream; later runs pass `--session <id>`. pi keeps sessions per folder under `~/.pi/agent/sessions`.
+- **Progress:** `tool_execution_start` events by tool (`bash` → `$ npm test`, `read`/`edit`/`write` → `edit b.lua`, `grep`, `find`, `ls`, MCP tools as `tool: server.name`), thinking as one `~ …` line and each finished stretch of assistant text as a snippet; retries and context compaction are shown too.
+- **Reply and errors:** the text of the last assistant message in `agent_end`. pi exits 0 even when the provider fails (a bad key, an overloaded model), so the bridge reads the message's `stopReason`: `error` or `aborted` becomes an error reply with pi's error message; `length` is noted in the reply. A pi that can't start (an unknown model, no key) prints to stderr and exits non-zero, which the bridge reports with the tail of stderr.
+- **Context:** the game context and primer go in with `--append-system-prompt`, on every run. pi also reads `AGENTS.md` and `CLAUDE.md` in the chat's folder on its own.
+- **Model:** `provider`, `model` (also `provider/id`, optionally with `:<thinking>`) and `thinking` in its config block; empty uses pi's own default from `~/.pi/agent/settings.json`.
+
 ## Known limits
 
 - One agent CLI can only be as headless as it is. If an agent hangs waiting for something interactive (a first-run login, an update prompt), the run ends when `timeoutMs` (30 minutes) expires; run the CLI by hand once on the bridge PC to get past it.
 - The **Allow** button needs the agent to report what it refused. Claude always does; Grok marks the refused call `failed` with a "was not executed" line, which the bridge reads; Codex says it in its own words and has no rule to add anyway.
 - The bridge's own transcript (`bridge/transcripts.json`) and the addon's history record which agent wrote each reply, so a restored chat keeps its labels. Chats saved before agents existed show their replies as Claude's.
 - Codex and Grok were tested live against codex 0.156.1 and Grok Build 1.0.41 (the inject test, plus captured streams in `tests/agents_test.js`). Unknown event types are ignored; a stream that ends without a result is reported as an error with the exit code and the tail of stderr.
+- pi was checked against pi 1.2.0 with a scripted model (pi's own `faux` test provider loaded as an extension): the captured streams in `tests/fixtures/agents/pi-*.jsonl` and a full `--inject` run through the bridge into the slot files. Not yet run against a real model or a live game.
 - Antigravity and Hermes were contributed with captured streams in the tests and a live check by their author on Windows; the maintainer has not run them. Hermes gives no live progress (its reply is read when the process ends) and its permission mode is always the default: the bridge never passes it `--yolo`.
 
 ## Trying one without the game

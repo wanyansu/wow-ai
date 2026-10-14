@@ -6,6 +6,7 @@
 //   claude  Claude Code   `claude -p --output-format stream-json`, prompt on stdin
 //   codex   OpenAI Codex  `codex exec --json`, prompt on stdin
 //   grok    xAI Grok      `grok --prompt-file … --output-format streaming-json`
+//   pi      pi            `pi -p --mode json`, prompt on stdin
 //
 // Everything is pure (no I/O) except resolveCommand, which looks for the
 // executable on disk. Adding an agent: an entry in AGENTS (args, input, parser,
@@ -327,6 +328,84 @@ function hermesParser() {
 }
 
 // ---------------------------------------------------------------------------
+// pi
+// ---------------------------------------------------------------------------
+
+// Claude-syntax tool names (config.json, the Allow button) to pi's built-in
+// tools. A rule that names a command (`Bash(git:*)`) has no pi equivalent:
+// pi can only switch the whole tool on or off.
+const PI_TOOL_NAMES = {
+  bash: 'bash', powershell: 'powershell', read: 'read', edit: 'edit', write: 'write',
+  multiedit: 'edit', grep: 'grep', glob: 'find', find: 'find', ls: 'ls',
+};
+
+function piTool(rule) {
+  const s = String(rule || '').trim();
+  if (!s || /\(/.test(s)) return null;
+  return PI_TOOL_NAMES[s.toLowerCase()] || (/^[a-z0-9_*-]+$/.test(s) ? s : null);
+}
+
+// One progress line for a pi tool call.
+function piToolLine(name, args) {
+  const a = args && typeof args === 'object' ? args : {};
+  switch (name) {
+    case 'bash': case 'powershell': return `$ ${firstLine(a.command)}`;
+    case 'read': return `read ${baseName(a.path)}`;
+    case 'write': return `write ${baseName(a.path)}`;
+    case 'edit': return `edit ${baseName(a.path)}`;
+    case 'grep': return `grep ${a.pattern || ''}`;
+    case 'find': return `find ${a.pattern || ''}`;
+    case 'ls': return `ls ${baseName(a.path) || '.'}`;
+    default: return /^mcp__/.test(String(name)) ? `tool: ${String(name).slice(5).replace('__', '.')}` : String(name || 'tool');
+  }
+}
+
+function piText(message) {
+  const content = message && Array.isArray(message.content) ? message.content : [];
+  return content.filter(b => b && b.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n\n');
+}
+
+function piParser() {
+  let last = null; // the newest assistant message: the reply is the last one of the run
+  return {
+    feed(ev) {
+      const out = empty();
+      switch (ev.type) {
+        case 'session': if (ev.id) out.session = String(ev.id); break;
+        case 'message_end': {
+          const m = ev.message;
+          if (!m || m.role !== 'assistant') break;
+          last = m;
+          for (const b of Array.isArray(m.content) ? m.content : []) {
+            if (b && b.type === 'thinking' && b.thinking && b.thinking.trim()) out.progress.push('~ ' + snippet(b.thinking));
+            else if (b && b.type === 'text' && b.text && b.text.trim()) out.progress.push(snippet(b.text));
+          }
+          break;
+        }
+        case 'tool_execution_start': out.progress.push(piToolLine(ev.toolName, ev.args)); break;
+        case 'auto_retry_start': out.progress.push(`retrying (${ev.attempt || '?'}/${ev.maxAttempts || '?'}): ${snippet(ev.errorMessage)}`); break;
+        case 'compaction_start': out.progress.push('compacting the conversation'); break;
+        case 'agent_end': {
+          const msgs = Array.isArray(ev.messages) ? ev.messages : [];
+          const m = [...msgs].reverse().find(x => x && x.role === 'assistant') || last;
+          if (!m) { out.done = { text: 'pi finished without a reply', error: true }; break; }
+          const reason = String(m.stopReason || '');
+          if (reason === 'error' || reason === 'aborted') {
+            out.done = { text: String(m.errorMessage || piText(m) || `pi stopped: ${reason}`), error: true };
+          } else {
+            if (reason === 'length') out.notes.push('pi stopped early: the model hit its output limit');
+            out.done = { text: piText(m), error: false };
+          }
+          break;
+        }
+        default: break; // agent_start, turn_*, message_start/update, tool updates, queue_update, agent_settled, …
+      }
+      return out;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The table
 // ---------------------------------------------------------------------------
 
@@ -476,6 +555,39 @@ const AGENTS = {
     },
     env: env => env, parser: hermesParser,
   },
+  pi: {
+    name: 'pi', command: 'pi',
+    install: 'npm install -g @earendil-works/pi-coding-agent, then run `pi` once and log in (/login) or set your provider\'s API key',
+    windowsPaths: () => [], posixPaths: () => [],
+    npmPackage: '@earendil-works/pi-coding-agent',
+    args({ cfg, resume, system }) {
+      const a = ['-p', '--mode', 'json'];
+      // pi never asks before using a tool, so the permission mode picks which
+      // tools it gets at all: reading only, reading and editing, or everything.
+      // "Bash" (or any other tool name) in allowedTools adds that whole tool.
+      const mode = cfg.permissionMode || 'acceptEdits';
+      if (mode !== 'bypassPermissions') {
+        const tools = mode === 'default' ? ['read', 'grep', 'find', 'ls'] : ['read', 'grep', 'find', 'ls', 'edit', 'write'];
+        for (const r of (Array.isArray(cfg.allowedTools) ? cfg.allowedTools : [])) { const t = piTool(r); if (t) tools.push(t); }
+        a.push('--tools', [...new Set(tools)].join(','));
+      }
+      const denied = new Set();
+      for (const r of (Array.isArray(cfg.deniedTools) ? cfg.deniedTools : [])) { const t = piTool(r); if (t) denied.add(t); }
+      if (denied.size) a.push('--exclude-tools', [...denied].join(','));
+      if (cfg.provider) a.push('--provider', cfg.provider);
+      if (cfg.model) a.push('--model', cfg.model);
+      if (cfg.thinking) a.push('--thinking', cfg.thinking);
+      if (resume) a.push('--session', resume);
+      if (system) a.push('--append-system-prompt', system);
+      return a.concat(Array.isArray(cfg.extraArgs) ? cfg.extraArgs : []);
+    },
+    input: ({ prompt, images }) => {
+      const attached = images && images.length ? `\n\nAttached screenshots: ${images.join(', ')} — read them with your read tool.` : '';
+      return { stdin: prompt + attached };
+    },
+    env: (env) => env,
+    parser: piParser,
+  },
 };
 
 const DEFAULT_AGENT = 'claude';
@@ -600,6 +712,6 @@ function resolveCommand(id, cfg = {}) {
 module.exports = {
   AGENTS, DEFAULT_AGENT, agentIds, normalizeAgent, displayName, agentConfig,
   grokRules, snippet, contextBlock,
-  claudeParser, codexParser, grokParser, agyParser, hermesParser, codexItemLine, grokCall, grokRefusal, shellInner,
+  claudeParser, codexParser, grokParser, agyParser, hermesParser, piParser, piToolLine, piTool, codexItemLine, grokCall, grokRefusal, shellInner,
   resolveCommand, unwrapShim, nativeNextTo,
 };

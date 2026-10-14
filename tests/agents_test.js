@@ -2,7 +2,7 @@
 // delivery, permissions) and how its output stream is read back into progress
 // lines, a session id and a reply. The sample streams are the formats the CLIs
 // document: Claude Code's stream-json, Codex's `exec --json` JSONL, Grok's
-// `--output-format streaming-json`.
+// `--output-format streaming-json`, pi's `--mode json`.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -14,7 +14,7 @@ const A = require('../bridge/agents');
 const SYS = 'The user is talking to you from inside World of Warcraft';
 
 test('agent ids, display names and the legacy Claude config keys', () => {
-  assert.deepEqual(A.agentIds(), ['claude', 'codex', 'grok', 'agy', 'hermes']);
+  assert.deepEqual(A.agentIds(), ['claude', 'codex', 'grok', 'agy', 'hermes', 'pi']);
   assert.equal(A.normalizeAgent(' Codex '), 'codex');
   assert.equal(A.normalizeAgent('gemini'), null);
   assert.equal(A.normalizeAgent(''), null);
@@ -360,4 +360,46 @@ test('resolveCommand: a configured script runs with this node, an npm .cmd shim 
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('pi: json mode, tool allowlist per permission mode, resume and the system prompt', () => {
+  const accept = A.AGENTS.pi.args({ cfg: { permissionMode: 'acceptEdits', provider: 'anthropic', model: 'sonnet', thinking: 'low' }, resume: 's-1', cwd: 'C:\\p', system: SYS });
+  assert.deepEqual(accept, ['-p', '--mode', 'json', '--tools', 'read,grep,find,ls,edit,write',
+    '--provider', 'anthropic', '--model', 'sonnet', '--thinking', 'low', '--session', 's-1', '--append-system-prompt', SYS]);
+  assert.deepEqual(A.AGENTS.pi.args({ cfg: { permissionMode: 'default' }, resume: '', cwd: '.' }), ['-p', '--mode', 'json', '--tools', 'read,grep,find,ls']);
+  // Whole tools named in allowedTools are added; per-command rules have no pi equivalent and are skipped.
+  const withBash = A.AGENTS.pi.args({ cfg: { allowedTools: ['Bash', 'Bash(git:*)', 'WebSearch', 'Glob'], deniedTools: ['Write', 'Bash(rm:*)'] }, resume: '', cwd: '.' });
+  assert.deepEqual(withBash, ['-p', '--mode', 'json', '--tools', 'read,grep,find,ls,edit,write,bash', '--exclude-tools', 'write']);
+  // bypassPermissions is pi's own default tool set (bash included); deny rules still apply.
+  assert.deepEqual(A.AGENTS.pi.args({ cfg: { permissionMode: 'bypassPermissions', deniedTools: ['Bash'], extraArgs: ['--offline'] }, resume: '', cwd: '.' }),
+    ['-p', '--mode', 'json', '--exclude-tools', 'bash', '--offline']);
+  assert.deepEqual(A.AGENTS.pi.input({ prompt: 'hi' }), { stdin: 'hi' });
+});
+
+test('pi: a captured --mode json stream (pi 1.2.0) gives progress, the session id and the reply', () => {
+  const read = f => fs.readFileSync(path.join(__dirname, 'fixtures/agents', f), 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+  const run = (events) => {
+    const p = A.piParser();
+    const all = { progress: [], notes: [], session: '', done: null };
+    for (const ev of events) {
+      const r = p.feed(ev);
+      all.progress.push(...r.progress); all.notes.push(...r.notes);
+      if (r.session) all.session = r.session;
+      if (r.done) all.done = r.done;
+    }
+    return all;
+  };
+  const ok = run(read('pi-tools.jsonl'));
+  assert.equal(ok.session, '01a13aac-9b79-77a4-a039-5cbe351fce31');
+  assert.deepEqual(ok.progress, ['~ Let me look around.', "I'll check the files.", '$ ls -la', 'write notes.txt', 'edit notes.txt', 'PONG TL;DR: done.']);
+  assert.deepEqual(ok.done, { text: 'PONG\n\nTL;DR: done.', error: false });
+  // A provider error ends the run with exit code 0; the stop reason is what says it failed.
+  const err = run(read('pi-error.jsonl'));
+  assert.deepEqual(err.done, { text: '401 invalid api key', error: true });
+  assert.equal(A.piToolLine('mcp__github__get_me', {}), 'tool: github.get_me');
+  assert.equal(A.piToolLine('grep', { pattern: 'TODO' }), 'grep TODO');
+  const cut = A.piParser();
+  const r = cut.feed({ type: 'agent_end', messages: [{ role: 'assistant', content: [{ type: 'text', text: 'partial' }], stopReason: 'length' }] });
+  assert.deepEqual(r.done, { text: 'partial', error: false });
+  assert.match(r.notes[0], /output limit/);
 });
